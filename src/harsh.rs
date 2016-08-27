@@ -1,4 +1,3 @@
-
 use {Error, Result};
 use std::str;
 
@@ -75,6 +74,83 @@ impl Harsh {
                      buffer.bytes().nth(2).expect("hellfire and damnation") as usize) %
                     self.guards.len();
                 let guard = self.guards[guard_index];
+                buffer.push(guard as char);
+            }
+        }
+
+        let half_length = alphabet.len() / 2;
+        while buffer.len() < self.hash_length {
+            {
+                let alphabet_copy = alphabet.clone();
+                shuffle(&mut alphabet, &alphabet_copy);
+            }
+
+            let (left, right) = alphabet.split_at(half_length);
+            buffer = format!("{}{}{}",
+                             String::from_utf8_lossy(right),
+                             buffer,
+                             String::from_utf8_lossy(left));
+
+            let excess = buffer.len() as i32 - self.hash_length as i32;
+            if excess > 0 {
+                let marker = excess as usize / 2;
+                buffer = buffer[marker..marker + self.hash_length].to_owned();
+            }
+        }
+
+        Some(buffer)
+    }
+
+    pub fn encode_unchecked(&self, values: &[u64]) -> Option<String> {
+        if values.len() == 0 {
+            return None;
+        }
+
+        let nhash = create_nhash(values);
+
+        let mut alphabet = self.alphabet.clone();
+        let mut buffer = String::new();
+
+        let idx = (nhash % alphabet.len() as u64) as usize;
+        let lottery = unsafe { *alphabet.get_unchecked(idx) };
+        buffer.push(lottery as char);
+
+        for (idx, &value) in values.iter().enumerate() {
+            let mut value = value;
+
+            let temp = {
+                let mut temp = Vec::with_capacity(self.salt.len() + alphabet.len() + 1);
+                temp.push(lottery);
+                temp.extend_from_slice(&self.salt);
+                temp.extend_from_slice(&alphabet);
+                temp
+            };
+
+            let alphabet_len = alphabet.len();
+            shuffle(&mut alphabet, &temp[..alphabet_len]);
+
+            let last = hash(value, &alphabet);
+            buffer.push_str(&last);
+
+            if idx + 1 < values.len() {
+                value %= (last.bytes().nth(0).unwrap_or(0) as usize + idx) as u64;
+                buffer.push(unsafe { *self.separators.get_unchecked((value % self.separators.len() as u64) as usize) as char });
+            }
+        }
+
+        if buffer.len() < self.hash_length {
+            let guard_index = (nhash as usize +
+                               buffer.bytes().nth(0).expect("hellfire and damnation") as usize) %
+                              self.guards.len();
+            let guard = unsafe { *self.guards.get_unchecked(guard_index) };
+            buffer.insert(0, guard as char);
+
+            if buffer.len() < self.hash_length {
+                let guard_index =
+                    (nhash as usize +
+                     buffer.bytes().nth(2).expect("hellfire and damnation") as usize) %
+                    self.guards.len();
+                let guard = unsafe { *self.guards.get_unchecked(guard_index) };
                 buffer.push(guard as char);
             }
         }
@@ -687,5 +763,27 @@ mod tests {
         harsh::shuffle(&mut values, salt);
 
         assert_eq!("vdwqfrzcsxae", String::from_utf8_lossy(&values));
+    }
+}
+
+#[cfg(feature = "bench")]
+mod benchmarks {
+    use harsh::{Harsh, HarshFactory};
+    use test::*;
+
+    #[bench]
+    fn with_checked(b: &mut Bencher) {
+        let harsh = init();
+        b.iter(|| black_box(harsh.encode(&[5, 6, 7, 8])));
+    } 
+
+    #[bench]
+    fn with_unchecked(b: &mut Bencher) {
+        let harsh = init();
+        b.iter(|| black_box(harsh.encode_unchecked(&[5, 6, 7, 8])));
+    }
+
+    fn init() -> Harsh {
+        HarshFactory::new().salt("i am the salt of the earth").length(20).init().unwrap()
     }
 }
